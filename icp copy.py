@@ -8,6 +8,8 @@ import numpy as np
 import open3d as o3d
 from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation
+import subprocess
+import shutil
 
 
 @dataclass
@@ -353,6 +355,38 @@ merged = merge_dataset_to_global_map(dataset)
 
 # Visualize using your helper
 dataset.visualize_global_map(merged)
+
+def ensure_git_remote(remote_name: str, remote_url: str) -> None:
+    """
+    Ensure a git repository exists in the current directory and the given remote is set.
+    If remote exists with different URL it will be updated.
+    """
+    # Init repo if missing
+    if not os.path.isdir(".git"):
+        subprocess.run(["git", "init"], check=True)
+    # Get current remotes
+    res = subprocess.run(["git", "remote", "-v"], capture_output=True, text=True)
+    existing = {}
+    for line in res.stdout.strip().splitlines():
+        parts = line.split()
+        if len(parts) >= 2:
+            existing[parts[0]] = parts[1]
+    if remote_name in existing:
+        if existing[remote_name] != remote_url:
+            subprocess.run(["git", "remote", "remove", remote_name], check=True)
+            subprocess.run(["git", "remote", "add", remote_name, remote_url], check=True)
+    else:
+        subprocess.run(["git", "remote", "add", remote_name, remote_url], check=True)
+    print(f"Remote '{remote_name}' -> {remote_url} configured.")
+
+# Configure remote (edit URL as needed)
+ensure_git_remote("origin", "https://github.com/your-user/your-repo.git")
+
+# Optional first commit & push (uncomment when ready):
+# subprocess.run(["git", "add", "."], check=True)
+# subprocess.run(["git", "commit", "-m", "Initial commit"], check=True)
+# subprocess.run(["git", "branch", "-M", "main"], check=True)
+# subprocess.run(["git", "push", "-u", "origin", "main"], check=True)
 
 
 
