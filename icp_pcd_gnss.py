@@ -1,6 +1,5 @@
 import os
 import glob
-from dataclasses import dataclass
 from typing import Optional, Dict, Any, Tuple
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -10,30 +9,16 @@ from scipy.spatial import cKDTree
 from scipy.spatial.transform import Rotation
 
 
-@dataclass
-class Pose:
-    """Simple container for a GNSS pose."""
-    t_ns: int
-    latitude: float
-    longitude: float
-    altitude: float
-
-
 class LidarGnssDataset:
     """
       1) Load GNSS (fix.csv) and LiDAR (.pcd) data
-      2) Match LiDAR scans to the nearest GNSS fix in time
+      2) Match LiDAR scans to the nearest GNSS wrt time
       3) Provide scan + pose access via indexing
-      4) Visualize matched trajectory and time differences
+      4) Plot matched trajectory and time differences
     """
 
-    def __init__(
-        self,
-        gps_readings_dir: str,
-        lidar_pcd_dir: str,
-        tolerance_ns: int = 500_000_000,  # 0.5 seconds
-    ) -> None:
-        
+    def __init__(self, gps_readings_dir, lidar_pcd_dir, tolerance_ns):
+    
         self.gps_readings_dir = gps_readings_dir
         self.lidar_pcd_dir = lidar_pcd_dir
         self.tolerance_ns = tolerance_ns
@@ -42,30 +27,28 @@ class LidarGnssDataset:
         self.pcd_df = self._load_pcd_files()            # Load LiDAR PCD data frame
         self.matched = self._match_lidar_to_gnss()      # Match LiDAR and GNSS together
 
-        # Keep only rows that actually got a match (no NaNs in key GNSS columns)
+        # Keep only rows that actually got a match
         self.matched = self.matched.dropna(subset=["latitude", "longitude"]).reset_index(drop=True)
 
     # ------------------------------------------------------------------ #
-    # Internal loaders
+    # Data loading 
     # ------------------------------------------------------------------ #
-    def _load_gnss_files(self) -> pd.DataFrame:
-        """ Loads GPS measurements from a CSV file into a pandas DataFrame"""
+    def _load_gnss_files(self):
         # Read the CSV file
         gnss_readings_df = pd.read_csv(self.gps_readings_dir)
         
-        # concatenate and convert to nanoseconds
+        # concatenate and convert to nanoseconds (to match LiDAR timestamps)
         gnss_readings_df["t_ns"] = gnss_readings_df["header_stamp_secs"] * 10**9 + gnss_readings_df["header_stamp_nsecs"] 
         
         # Sort readings by timestamp
         gnss_readings_df = gnss_readings_df.sort_values("t_ns").reset_index(drop=True)
         return gnss_readings_df
 
-    def _load_pcd_files(self) -> pd.DataFrame:
-        """Scan pcd_dir for .pcd files and extract timestamp from filename"""
+    def _load_pcd_files(self):
         # Find all .pcd files 
         pcd_files = sorted(glob.glob(os.path.join(self.lidar_pcd_dir, "*.pcd")))
         
-        # Create DataFrame with timestamps extracted from filenames
+        # Create dataframe with timestamps extracted from pcd filenames
         pcd_df = pd.DataFrame({"pcd_file": pcd_files})
         pcd_df["stamp_str"] = pcd_df["pcd_file"].apply(lambda p: os.path.splitext(os.path.basename(p))[0])
         pcd_df["t_ns"] = pd.to_numeric(pcd_df["stamp_str"], errors="coerce")
@@ -74,11 +57,8 @@ class LidarGnssDataset:
         pcd_df = pcd_df.sort_values("t_ns").reset_index(drop=True)
         return pcd_df
 
-    def _match_lidar_to_gnss(self) -> pd.DataFrame:
-        """
-        Match each LiDAR scan to the nearest GNSS fix in time using pandas.merge_asof.
-        """
-        
+    def _match_lidar_to_gnss(self):
+        # Match each LiDAR scan to the nearest GNSS fix in time using pandas.merge_asof        
         matched = pd.merge_asof(
             self.pcd_df.sort_values("t_ns"),
             self.gnss_df.sort_values("t_ns"),
@@ -87,95 +67,54 @@ class LidarGnssDataset:
             tolerance=self.tolerance_ns)
         return matched
 
-    def _ensure_time_diff(self) -> None:
-        """Compute time difference between LiDAR and GNSS in ms"""
-
-        self.matched["gnss_t_ns"] = (
-            self.matched["header_stamp_secs"] * 10**9
-            + self.matched["header_stamp_nsecs"])
-        
-        self.matched["dt_ms"] = (self.matched["t_ns"] - self.matched["gnss_t_ns"]) / 1e6
-
-
     # ------------------------------------------------------------------ #
-    # Visualization helpers
+    # Visualization
     # ------------------------------------------------------------------ #
-    def plot_trajectory(self, color_by_dt: bool = False) -> None:
-        """
-        Plot the trajectory of matched LiDAR–GNSS points.
-        """
-        if len(self.matched) == 0:
-            raise RuntimeError("No matched scans to plot.")
-
-        if color_by_dt:
-            self._ensure_time_diff()
-            c = self.matched["dt_ms"]
-            sc = plt.scatter(
-                self.matched["longitude"],
-                self.matched["latitude"],
-                s=5,
-                c=c,
-            )
-            plt.colorbar(sc, label="(LiDAR - GNSS) time difference in [ms]")
-            plt.title("Matched LIDAR–GNSS Trajectory")
-        else:
-            plt.scatter(
-                self.matched["longitude"],
-                self.matched["latitude"],
-                s=5,
-            )
-            plt.title("Matched LiDAR–GNSS Trajectory")
-
+    
+    def plot_trajectory(self):
+        # Plot the trajectory of matched LiDAR–GNSS points
+        plt.scatter(
+            self.matched["longitude"],
+            self.matched["latitude"],
+            s=5,
+        )
+        plt.title("Matched LiDAR–GNSS Trajectory")
         plt.xlabel("Longitude")
         plt.ylabel("Latitude")
         plt.axis("equal")
         plt.show()
     
     def visualize_global_map(self, merged):
-        """
-        Build and visualize the merged global point cloud.
-        """
-
+        # Build and plot the merged global point cloud
         o3d.visualization.draw_geometries([merged])
 
     
     # ------------------------------------------------------------------ #
     # Public API
     # ------------------------------------------------------------------ #
-    def __len__(self) -> int:
-        return len(self.matched)
-
-    def get_scan_info(self, idx: int) -> Dict[str, Any]:
-        """
-        Return basic info about the scan+pose at index idx.
-        Does NOT load the PCD file itself (just path + pose metadata).
-        """
+    def __len__(self):
+        return len(self.matched)        # Number of matched LiDAR–GNSS pairs
+    
+    
+    def get_scan_info(self, idx):       #Return basic info (path + pose metadata) about the scan+pose at index idx.
         row = self.matched.iloc[idx]
 
-        pose = Pose(
-            t_ns=int(row["t_ns"]),
-            latitude=float(row["latitude"]),
-            longitude=float(row["longitude"]),
-            altitude=float(row.get("altitude", 0.0)),
-        )
+        pose = {
+            "t_ns": int(row["t_ns"]),
+            "latitude": float(row["latitude"]),
+            "longitude": float(row["longitude"]),
+            "altitude": float(row.get("altitude", 0.0)),
+        }
 
         return {
             "pcd_file": row["pcd_file"],
             "t_ns": int(row["t_ns"]),
             "pose": pose,
-        }
-
-    def __getitem__(self, idx: int) -> Dict[str, Any]:
-        """Alias for get_scan_info so you can do: dataset[i]"""
-        return self.get_scan_info(idx)
+        }    
     
-                                                                                   
-    def iter_scans(self):
-        """Convenience generator over all scans."""
-        for i in range(len(self)):
-            yield self.get_scan_info(i)
-    
-    def pcd_read(self, pcd_file):
+    def pcd_read(self, pcd_file):       # alternative to using o3d.io.read_point_cloud function
+        """Reads an ASCII .pcd file, parses XYZ points after the DATA header into a NumPy array.
+        Returns an Open3D PointCloud containing only those XYZ points"""
         with open(pcd_file, 'r') as f:
             lines = f.readlines()
 
@@ -198,23 +137,18 @@ class LidarGnssDataset:
         pcd = o3d.geometry.PointCloud()
         pcd.points = o3d.utility.Vector3dVector(points)
 
-        return pcd
+        return pcd      
     
     def load_pcd(self, idx: int) -> o3d.geometry.PointCloud:
         """
-        Load the LiDAR scan at index `idx` as an Open3D point cloud.
-
-        :param idx: Index into the matched dataset (0 <= idx < len(self))
-        :return: open3d.geometry.PointCloud
+        Load the LiDAR scan at index `idx` as an Open3D point cloud
         """
-        info = self.get_scan_info(idx)
-        pcd_path = info["pcd_file"]
-        # pcd = o3d.io.read_point_cloud(pcd_path)
-        pcd = self.pcd_read(pcd_path)            
-        return pcd
+        info = self.get_scan_info(idx)  #input index of the scan to load
+        pcd_path = info["pcd_file"]     
+        pcd = self.pcd_read(pcd_path)   # load point cloud from .pcd file         
+        return pcd                      
     
-    
-# ------------------------------------------------------------------ #
+# -----------------------------main------------------------------- #
 
 dataset = LidarGnssDataset(
     gps_readings_dir="parkolo1/fix.csv",
@@ -222,52 +156,24 @@ dataset = LidarGnssDataset(
     tolerance_ns=500_000_000,
 )
 
-# Trajectory colored by time difference
-dataset.plot_trajectory(color_by_dt=True)
+# GNSS Trajectory
+dataset.plot_trajectory()
 
-
+# ------------------------------------------------------------------ #
+# ICP-based global map merging
 def merge_dataset_to_global_map_icp(
     dataset: LidarGnssDataset,
-    voxel_size: float = 0.2,
-    max_correspondence_distance: float = 1.0,
-    xyz_out_path: Optional[str] = None,
-    traj_out_path: Optional[str] = None,
-) -> Tuple[o3d.geometry.PointCloud, np.ndarray]:
-    """
-    Build a merged global point cloud from a LidarGnssDataset.
-
-    - GNSS is used only to provide a trans_init (initial guess) for ICP
-      between consecutive scans.
-    - ICP refines the relative transform between current and previous scan.
-    - Transforms are accumulated to build a global map.
-
-    Parameters
-    ----------
-    dataset : LidarGnssDataset
-        Dataset with matched LiDAR scans and GNSS poses.
-    voxel_size : float
-        Voxel size for downsampling scans used in ICP.
-    max_correspondence_distance : float
-        Max correspondence distance (meters) for ICP.
-    xyz_out_path : Optional[str]
-        If provided, saves the merged global points to a plain-text .xyz file.
-    traj_out_path : Optional[str]
-        If provided, saves ICP odometry trajectory translations (x y z per line).
-
-    Returns
-    -------
-    merged_pcd, trajectory_icp
-        trajectory_icp shape (M,3), M = number of accepted poses.
-    """
-
-    if len(dataset) == 0:
-        raise RuntimeError("Dataset is empty, cannot build global map.")
+    voxel_size: 0.2,            #for downsampling scans 
+    max_correspondence_distance: 1.0,   
+    xyz_out_path,           #to save the merged global points to a plain-text .xyz file
+    traj_out_path,          #to save ICP odometry trajectory translations (x y z per line)
+    ):
 
     # ----------------------------
-    # WGS84 helpers: LLA -> ECEF -> ENU
+    # LLA -> ECEF -> ENU
     # ----------------------------
-    def geodetic_to_ecef(lat_deg, lon_deg, alt_m):
-        a = 6378137.0               # WGS84 semi-major axis [m]
+    def lla_to_ecef(lat_deg, lon_deg, alt_m):
+        a = 6378137.0               # equatorial radius [m] (referenced from WGS84 world geodetic system)
         e_sq = 6.69437999014e-3     # first eccentricity squared
 
         lat = np.deg2rad(lat_deg)
@@ -278,7 +184,7 @@ def merge_dataset_to_global_map_icp(
         sin_lon = np.sin(lon)
         cos_lon = np.cos(lon)
 
-        N = a / np.sqrt(1.0 - e_sq * sin_lat**2)
+        N = a / np.sqrt(1.0 - e_sq * sin_lat**2)    # prime vertical radius of curvature
 
         x = (N + alt_m) * cos_lat * cos_lon
         y = (N + alt_m) * cos_lat * sin_lon
@@ -286,9 +192,9 @@ def merge_dataset_to_global_map_icp(
 
         return np.array([x, y, z])
 
-    def ecef_to_enu(x, y, z, lat0_deg, lon0_deg, alt0_m):
+    def ecef_to_enu(x, y, z, lat0_deg, lon0_deg, alt0_m):   
         # Origin in ECEF
-        x0, y0, z0 = geodetic_to_ecef(lat0_deg, lon0_deg, alt0_m)
+        x0, y0, z0 = lla_to_ecef(lat0_deg, lon0_deg, alt0_m)
         dx, dy, dz = x - x0, y - y0, z - z0
 
         lat0 = np.deg2rad(lat0_deg)
@@ -299,7 +205,7 @@ def merge_dataset_to_global_map_icp(
         sin_lon0 = np.sin(lon0)
         cos_lon0 = np.cos(lon0)
 
-        R = np.array([
+        R = np.array([                  # ECEF to ENU rotation matrix
             [-sin_lon0,               cos_lon0,              0.0],
             [-sin_lat0 * cos_lon0,   -sin_lat0 * sin_lon0,   cos_lat0],
             [ cos_lat0 * cos_lon0,    cos_lat0 * sin_lon0,   sin_lat0],
@@ -307,19 +213,20 @@ def merge_dataset_to_global_map_icp(
 
         return R @ np.array([dx, dy, dz])  # (e, n, u)
 
-    # ----------------------------
+    # ---------------------------- HERE STARTS THE ACTUAL PROCESSING ----------------------------
+    
     # ENU positions for all scans (GNSS-only)
     # ----------------------------
     # Use first scan pose as ENU origin
-    ref_info = dataset.get_scan_info(0)
+    ref_info = dataset.get_scan_info(0)         #origin gnns pose from first scan
     ref_pose = ref_info["pose"]
-    lat0, lon0, alt0 = ref_pose.latitude, ref_pose.longitude, ref_pose.altitude
+    lat0, lon0, alt0 = ref_pose["latitude"], ref_pose["longitude"], ref_pose["altitude"]
 
     enu_positions = []
     for i in range(len(dataset)):
         info = dataset.get_scan_info(i)
         pose = info["pose"]
-        x_ecef, y_ecef, z_ecef = geodetic_to_ecef(pose.latitude, pose.longitude, pose.altitude)
+        x_ecef, y_ecef, z_ecef = lla_to_ecef(pose["latitude"], pose["longitude"], pose["altitude"])
         e, n, u = ecef_to_enu(x_ecef, y_ecef, z_ecef, lat0, lon0, alt0)
         enu_positions.append(np.array([e, n, u], dtype=np.float64))
     enu_positions = np.stack(enu_positions, axis=0)  # (N, 3)
@@ -329,65 +236,55 @@ def merge_dataset_to_global_map_icp(
     # ----------------------------
     # Load first scan
     pcd0 = dataset.load_pcd(0)
-    pcd0_down = pcd0.voxel_down_sample(voxel_size)
 
-    # Global transform list: T_global[i] maps scan i -> global
-    T_global_list = [np.eye(4)]
-    global_points = [np.asarray(pcd0.points)]
-    trajectory_icp = [np.zeros(3)]  # origin translation
+    # INITIALIZATION - store global transforms and merged points
+    T_global_list = [np.eye(4)]                     # 4×4 matrix that transforms scan i → global frame. First scan is identity (no transform)  
+    global_points = [np.asarray(pcd0.points)]       # Store first scan's points (already in global frame)    
+    trajectory_icp = [np.zeros(3)]                  # Trajectory starts at origin [0, 0, 0]
+    registration = o3d.pipelines.registration       # Open3D module doing actual icp algorithm 
+    prev_pcd = pcd0                                 # Initialize with first scan (no need to reload in loop)
 
-    registration = o3d.pipelines.registration
-
-    for i in range(1, len(dataset)):
-        # Current scan
-        prev_pcd_down = dataset.load_pcd(i - 1)
-        pcd_i = dataset.load_pcd(i)
-        if len(pcd_i.points) == 0:
-            # skip empty scans
-            T_global_list.append(T_global_list[-1].copy())
-            trajectory_icp.append(trajectory_icp[-1])
-            continue
-
-        #pcd_i_down = pcd_i.voxel_down_sample(voxel_size)
-        pcd_i_down = pcd_i
+    for i in range(1, len(dataset)):                # for each subsequent scan
+        pcd_i = dataset.load_pcd(i)                 # Load current scan
+        
         # GNSS-based initial guess between current (source) and previous (target)
         pos_prev = enu_positions[i - 1]
         pos_curr = enu_positions[i]
 
-        # Transformation that maps source (current) -> target (previous)
-        # t = p_curr - p_prev (see derivation)
-        delta = pos_curr - pos_prev
-        trans_init = np.eye(4)
-        trans_init[:3, 3] = delta
-
-        # ICP: source = current, target = previous
+        # Transformation that maps source (current) -> target (previous) based on GNSS delta
+        delta = pos_curr - pos_prev                 # ENU translation from previous (GNSS) to current scan. 
+        trans_init = np.eye(4)          
+        trans_init[:3, 3] = delta                   # Initial guess transformation matrix
+        # print(f"Scan {i}: GNSS delta (ENU) = {delta}")
+        
+        # run ICP registration  
         icp_result = registration.registration_icp(
-            source=pcd_i_down,
-            target=prev_pcd_down,
-            max_correspondence_distance=max_correspondence_distance,
-            init=trans_init,
-            estimation_method=registration.TransformationEstimationPointToPoint(),
+            source=pcd_i,                                               # Current scan (to be aligned)
+            target=prev_pcd,                                            # Previous scan (reference)
+            max_correspondence_distance=max_correspondence_distance,    
+            init=trans_init,                                            # GNSS-based starting guess
+            estimation_method=registration.TransformationEstimationPointToPoint(),      # Point-to-point ICP
         )
 
-        T_prev_curr = icp_result.transformation  # maps current -> previous
+        T_prev_curr = icp_result.transformation                         # maps current -> previous
+        
         if icp_result.inlier_rmse < 0.3:
             # Accumulate to global:
-            # T_curr_global = T_prev_global @ T_prev_curr
-            T_prev_global = T_global_list[-1]
-            T_curr_global = T_prev_global @ T_prev_curr
-            T_global_list.append(T_curr_global)
+            T_prev_global = T_global_list[-1]                           # map previous scan to global transform = accumulated transform up to previous scan
+            T_curr_global = T_prev_global @ T_prev_curr                 # current scan → previous scan (from ICP) @ previous scan → global (accumulated)
+            T_global_list.append(T_curr_global)                         # Store current scan → global transform
 
             # Record translation component (odometry pose)
             trajectory_icp.append(T_curr_global[:3, 3])
 
-            # Transform current *full-resolution* scan to global and store points
+            # Transform current (full resolution) scan to global and store points
             pts = np.asarray(pcd_i.points)
-            pts_h = np.hstack([pts, np.ones((pts.shape[0], 1))])  # (N,4)
-            pts_global = (T_curr_global @ pts_h.T).T[:, :3]
-            global_points.append(pts_global)
+            pts_h = np.hstack([pts, np.ones((pts.shape[0], 1))])        # (N,4) homogeneous[x,y,z,1]
+            pts_global = (T_curr_global @ pts_h.T).T[:, :3]             # Transform to global frame
+            global_points.append(pts_global)                    
 
-            # Update previous downsampled scan (always in local frame)
-            prev_pcd_down = pcd_i_down
+            # Update previous scan for next iteration's ICP target
+            prev_pcd = pcd_i
         else:
             # If rejected, repeat previous pose
             T_global_list.append(T_global_list[-1].copy())
@@ -398,25 +295,31 @@ def merge_dataset_to_global_map_icp(
     # ----------------------------
     merged_pts = np.vstack(global_points)
 
+    # Save merged point cloud to file in xyz format
     if xyz_out_path:
         os.makedirs(os.path.dirname(xyz_out_path), exist_ok=True)
         # Write "x y z" per line
         with open(xyz_out_path, "w") as f:
             np.savetxt(f, merged_pts, fmt="%.6f")
 
+    # Save ICP trajectory to file
     trajectory_icp = np.vstack(trajectory_icp)
     if traj_out_path:
         os.makedirs(os.path.dirname(traj_out_path), exist_ok=True)
         np.savetxt(traj_out_path, trajectory_icp, fmt="%.6f")
 
+    # Return merged point cloud and trajectory
     merged_pcd = o3d.geometry.PointCloud()
     merged_pcd.points = o3d.utility.Vector3dVector(merged_pts)
     return merged_pcd, trajectory_icp
 
+# ----------------------------- Run ICP-based merging ------------------------------- #
 merged_icp, traj_icp = merge_dataset_to_global_map_icp(
     dataset,
     xyz_out_path="parkolo1/outputs/merged_global.xyz",
     traj_out_path="parkolo1/outputs/trajectory_icp.txt",
-)
+    voxel_size=0.2,
+    max_correspondence_distance=1.0)
+
 dataset.visualize_global_map(merged_icp)
 print("ICP trajectory shape:", traj_icp.shape)
