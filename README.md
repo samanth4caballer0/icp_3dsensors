@@ -1,33 +1,60 @@
 # ELTE 3D Sensors: LiDAR+GNSS ICP Mapping
 
-Table of Contents
+## How to Run
 
-1. Introduction
-2. System Overview
-   2.1 Sensors
-   2.2 Data Characteristics
-3. Problem Definition
-4. Dataset Description
-   4.1 LiDAR PCD Files
-   4.2 GPS fix.csv File
-5. Methodology
-   5.1 Processing Pipeline
-   5.2 Block Diagram
-   5.3 GPS-Based Global Initial Alignment
-   5.4 ICP
-   5.5 GNSS starting point calibration
-   5.6 Final Map Generation
-6. Mathematical Foundations
-   6.1 Coordinate Transformations
-   6.2 ICP Error Metrics
-   6.4 Transformation chain
-7. Implementation Details
-   7.1 Code Structure
-   7.2 Loop Execution Flow
-8. Results
-   8.1 Parkolo1 Dataset Results
-10. Alternative Approaches
-11. Conclusion
+### Quick Start
+
+1. **Basic ICP Pipeline Execution:**
+   ```bash
+   python icp_pcd_gnss.py
+   ```
+   This will:
+   - Display a **GNSS trajectory map** (matplotlib window) showing the matched LiDAR–GNSS positions
+   - After closing the first window, automatically display the **merged global point cloud** (Open3D viewer)
+
+2. **Visualize ICP Trajectory Overlay:**
+   ```bash
+   python icp+trajectory_visualization.py
+   ```
+   This displays the **accumulated ICP odometry trajectory** (red line) superimposed on the merged point cloud.
+
+### Expected Output Files
+Both scripts generate output files in `parkolo1/outputs/`:
+- `merged_global.xyz` — merged point cloud in plain-text format
+- `trajectory_icp.txt` — ICP trajectory (x, y, z per line)
+
+---
+
+## Table of Contents
+
+1. [Introduction](#1-introduction)
+2. [System Overview](#2-system-overview)
+   - 2.1 [Sensors](#21-sensors)
+   - 2.2 [Data Characteristics](#22-data-characteristics)
+3. [Problem Definition](#3-problem-definition)
+4. [Dataset Description](#4-dataset-description)
+   - 4.1 [LiDAR PCD Files](#41-lidar-pcd-files)
+   - 4.2 [GPS fix.csv File](#42-gps-fixcsv-file)
+5. [Methodology](#5-methodology)
+   - 5.1 [Processing Pipeline](#51-processing-pipeline)
+   - 5.2 [Block Diagram](#52-block-diagram)
+   - 5.3 [GPS-Based Global Initial Alignment](#53-gps-based-global-initial-alignment)
+   - 5.4 [ICP](#54-icp)
+   - 5.5 [GNSS starting point calibration](#55-gnss-starting-point-calibration)
+   - 5.6 [Final Map Generation](#56-final-map-generation)
+6. [Mathematical Foundations](#6-mathematical-foundations)
+   - 6.1 [Coordinate Transformations](#61-coordinate-transformations)
+   - 6.2 [ICP Error Metrics](#62-icp-error-metrics)
+   - 6.4 [Transformation chain](#64-transformation-chain)
+7. [Implementation Details](#7-implementation-details)
+   - 7.1 [Code Structure](#71-code-structure)
+   - 7.2 [Loop Execution Flow](#72-loop-execution-flow)
+8. [Results](#8-results)
+   - 8.1 [Parkolo1 Dataset Results](#81-parkolo1-dataset-results)
+10. [Alternative Approaches](#10-alternative-approaches)
+11. [Conclusion](#11-conclusion)
+
+---
 
 ## 1. Introduction
 This project builds a global map by merging sequential LiDAR point clouds aligned with GNSS. GNSS provides a coarse initial guess for the relative motion; ICP refines scan-to-scan alignment, and the refined transforms are accumulated to produce the final map.
@@ -347,12 +374,50 @@ Scan 2 ──────► T₂→global = T₁→global @ T₂→₁ ─┤
   - Else: repeat previous pose.
 
 ## 8. Results
+
 ### 8.1 Parkolo1 Dataset Results
-- Example paths:
-  - Inputs: parkolo1/fix.csv, parkolo1/pcd/
-  - Outputs: parkolo1/outputs/merged_global.xyz, trajectory_icp.txt
-- Trajectory visualization: dataset.plot_trajectory(color_by_dt=True) shows time-offset coloring.
-- Typical behavior: GNSS provides coarse alignment; ICP refines locally and improves map continuity.
+
+#### 8.1.1 GNSS Trajectory Visualization
+
+The raw GNSS trajectory shows the vehicle path in latitude-longitude coordinates. This provides the coarse initial alignment used as the starting guess for ICP.
+
+![GNSS Trajectory](deliverables/gnss_trajectory_map.png)
+
+**Figure 1:** Matched LiDAR–GNSS trajectory in geographic coordinates. Each point represents a time-matched scan position from RTK-corrected GNSS (~30-40cm accuracy).
+
+---
+
+#### 8.1.2 Merged Global Point Cloud (ICP)
+
+After ICP refinement and transform accumulation, all scans are merged into a single global map. Red and blue regions show different scan segments aligned in ENU frame.
+
+![ICP Merged Point Cloud](deliverables/lidar_pcd_icp.png)
+
+**Figure 2:** Global point cloud map after ICP-based alignment. The distinct color separation (red/blue) helps visualize scan registration quality and overlap regions.
+
+---
+
+#### 8.1.3 ICP Trajectory Overlay
+
+The refined ICP trajectory (red line) is overlaid on the merged point cloud, showing the sensor path through the environment. This trajectory is extracted from `T_curr_global[:3, 3]` at each accepted scan.
+
+![ICP Trajectory on Point Cloud](deliverables/icp_odom_trajectory_on_pcd.png)
+
+**Figure 3:** Accumulated ICP odometry trajectory (red) superimposed on the merged map. The smooth path demonstrates successful scan-to-scan alignment without significant drift.
+
+---
+
+#### Summary Statistics
+
+- **Dataset:** parkolo1
+- **Input Files:** 
+  - GNSS: `parkolo1/fix.csv`
+  - LiDAR: `parkolo1/pcd/*.pcd`
+- **Output Files:**
+  - Merged map: `parkolo1/outputs/merged_global.xyz`
+  - Trajectory: `parkolo1/outputs/trajectory_icp.txt`
+- **Typical ICP trajectory shape:** `(M, 3)` where M ≈ number of accepted scans
+- **Behavior:** GNSS provides coarse alignment (~30-40cm); ICP refines to ~cm-level local consistency
 
 ## 10. Alternative Approaches
 - Point-to-plane ICP (requires normals) for faster convergence.
