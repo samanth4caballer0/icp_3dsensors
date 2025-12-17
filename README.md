@@ -86,39 +86,208 @@ Because the vehicle is moving throughout the recording, the LiDAR scans cannot b
 - Merge transformed points; save outputs and visualize.
 
 ### 5.2 Block Diagram
+
+The following diagram illustrates the complete processing pipeline from raw data to merged global map:
+
+```mermaid
+flowchart TD
+    subgraph INPUT["📁 INPUT DATA"]
+        A1[("fix.csv<br/>GNSS readings")]
+        A2[("pcd/*.pcd<br/>LiDAR scans")]
+    end
+
+    subgraph LOAD["📥 DATA LOADING"]
+        B1["Load GNSS CSV<br/>Extract: lat, lon, alt, timestamp"]
+        B2["Load PCD files<br/>Extract: timestamp from filename"]
+    end
+
+    subgraph MATCH["🔗 TIME MATCHING"]
+        C1["Convert timestamps to nanoseconds"]
+        C2["Match LiDAR scans to nearest GNSS fix<br/>(merge_asof with tolerance)"]
+        C3["Drop unmatched rows"]
+    end
+
+    subgraph COORD["🌍 COORDINATE TRANSFORM"]
+        D1["Set first GNSS pose as origin<br/>(lat₀, lon₀, alt₀)"]
+        D2["For each scan:<br/>LLA → ECEF"]
+        D3["ECEF → ENU<br/>(local meters)"]
+        D4["Store ENU positions array<br/>(N, 3)"]
+    end
+
+    subgraph LLA_ECEF["LLA → ECEF Formula"]
+        E1["N = a / √(1 - e²sin²φ)"]
+        E2["x = (N + h)·cos(φ)·cos(λ)"]
+        E3["y = (N + h)·cos(φ)·sin(λ)"]
+        E4["z = (N(1-e²) + h)·sin(φ)"]
+    end
+
+    subgraph ECEF_ENU["ECEF → ENU Formula"]
+        F1["Translate: Δ = P - P₀"]
+        F2["Rotate: R·Δ = (e, n, u)"]
+    end
+
+    subgraph INIT["⚙️ INITIALIZATION"]
+        G1["Load first scan (pcd₀)"]
+        G2["T_global_list = [Identity 4×4]"]
+        G3["global_points = [pcd₀ points]"]
+        G4["trajectory = [[0,0,0]]"]
+        G5["prev_pcd = pcd₀"]
+    end
+
+    subgraph LOOP["🔄 ICP LOOP (for i = 1 to N-1)"]
+        H1["Load current scan (pcd_i)"]
+        H2["Get GNSS delta:<br/>δ = ENU[i] - ENU[i-1]"]
+        H3["Build initial guess:<br/>trans_init[:3,3] = δ"]
+        
+        subgraph ICP["🎯 ICP REGISTRATION"]
+            I1["Source: current scan"]
+            I2["Target: previous scan"]
+            I3["Initial guess: trans_init"]
+            I4["Run Point-to-Point ICP"]
+            I5["Output: T_prev_curr"]
+        end
+        
+        H4{"RMSE < 0.3?"}
+        
+        subgraph ACCEPT["✅ ACCEPT"]
+            J1["Chain transform:<br/>T_curr_global = T_prev_global @ T_prev_curr"]
+            J2["Store T_curr_global"]
+            J3["Record trajectory:<br/>T_curr_global[:3,3]"]
+            J4["Transform points to global:<br/>pts_global = T_curr_global @ pts_h"]
+            J5["Append to global_points"]
+            J6["Update: prev_pcd = pcd_i"]
+        end
+        
+        subgraph REJECT["❌ REJECT"]
+            K1["Copy previous transform"]
+            K2["Skip this scan's points"]
+        end
+    end
+
+    subgraph OUTPUT["📤 OUTPUT"]
+        L1["Merge all points:<br/>np.vstack(global_points)"]
+        L2["Create Open3D PointCloud"]
+        L3["Save merged_global.xyz"]
+        L4["Save trajectory_icp.txt"]
+        L5["Visualize 3D map"]
+    end
+
+    %% Connections
+    A1 --> B1
+    A2 --> B2
+    B1 --> C1
+    A2 --> C1
+    C1 --> C2
+    C2 --> C3
+    C3 --> D1
+    D1 --> D2
+    D2 --> D3
+    D3 --> D4
+    
+    D2 -.-> LLA_ECEF
+    D3 -.-> ECEF_ENU
+    
+    D4 --> G1
+    G1 --> G2 --> G3 --> G4 --> G5
+    G5 --> H1
+    
+    H1 --> H2 --> H3 --> I1
+    I1 --> I2 --> I3 --> I4 --> I5
+    I5 --> H4
+    
+    H4 -->|Yes| J1
+    J1 --> J2 --> J3 --> J4 --> J5 --> J6
+    J6 --> H1
+    
+    H4 -->|No| K1
+    K1 --> K2
+    K2 --> H1
+    
+    J5 --> L1
+    L1 --> L2
+    L2 --> L3
+    L2 --> L4
+    L2 --> L5
+
+    %% Styling
+    classDef input fill:#e1f5fe,stroke:#01579b
+    classDef process fill:#fff3e0,stroke:#e65100
+    classDef icp fill:#f3e5f5,stroke:#7b1fa2
+    classDef output fill:#e8f5e9,stroke:#2e7d32
+    classDef decision fill:#fff9c4,stroke:#f57f17
+    
+    class A1,A2 input
+    class B1,B2,C1,C2,C3,D1,D2,D3,D4,G1,G2,G3,G4,G5,H1,H2,H3,J1,J2,J3,J4,J5,J6,K1,K2 process
+    class I1,I2,I3,I4,I5 icp
+    class L1,L2,L3,L4,L5 output
+    class H4 decision
 ```
-fix.csv ──> GNSS (t_ns, LLA) ──┐
-                               ├─> Time match (merge_asof, tolerance) ──> Matched scans
-pcd/*.pcd (filename t_ns) ────┘
 
-Matched GNSS LLA ─> ECEF ─> ENU (origin: first pose)
-For i = 1..N-1:
-  GNSS delta (ENU) ─> trans_init ─> ICP(curr→prev) ─> T_prev_curr
-  T_curr_global = T_prev_global @ T_prev_curr
-  Transform curr points ─> accumulate global map
+### 5.2.1 Pipeline Summary Table
 
-Outputs:
-  merged_global.xyz
-  trajectory_icp.txt
-  Open3D visualization
+| Stage | Input | Process | Output |
+|-------|-------|---------|--------|
+| **1. Data Loading** | fix.csv, *.pcd files | Parse CSV, extract timestamps from filenames | gnss_df, pcd_df |
+| **2. Time Matching** | gnss_df, pcd_df | merge_asof (nearest neighbor with tolerance) | matched DataFrame |
+| **3. Coordinate Transform** | LLA coordinates | LLA → ECEF → ENU | enu_positions (N,3) array |
+| **4. Initialization** | First scan | Set identity transform, store first points | T_global_list, global_points |
+| **5. ICP Loop** | Consecutive scan pairs | GNSS init guess → ICP refinement → chain transforms | Accumulated transforms |
+| **6. Point Transform** | Local points + T_curr_global | Homogeneous multiplication | Global-frame points |
+| **7. Merge & Output** | All global points | vstack, create PointCloud | merged_pcd, trajectory |
+
+### 5.2.2 Key Concepts Explained
+
+#### Why GNSS → ENU?
+```
+GNSS (GPS) gives: latitude, longitude, altitude (degrees + meters)
+ICP needs: local Cartesian coordinates (meters)
+
+Solution: Convert to ENU (East-North-Up) centered at first pose
+- First pose becomes origin [0, 0, 0]
+- All other positions in meters relative to origin
 ```
 
-### 5.3 GPS-Based Global Initial Alignment
+#### Why use GNSS as initial guess?
+```
+ICP can fail if:
+- Initial alignment is too far off
+- Scans don't overlap enough
+
+GNSS provides ~30-40cm accuracy initial guess
+ICP refines to ~cm accuracy
+```
+
+#### Transform Chain Visualization
+```
+Scan 0 ──────────────────────────────► Global Frame
+         │                                    ▲
+         │ T₁→₀ (ICP)                        │
+         ▼                                    │
+Scan 1 ──────► T₁→global = I @ T₁→₀ ─────────┤
+         │                                    │
+         │ T₂→₁ (ICP)                        │
+         ▼                                    │
+Scan 2 ──────► T₂→global = T₁→global @ T₂→₁ ─┤
+         │                                    │
+        ...                                  ...
+```
+
+## 5.3 GPS-Based Global Initial Alignment
 - GNSS positions provide coarse motion between scans.
 - Used only as an initial guess; not trusted as final transform due to biases, latency, and measurement noise.
 
-### 5.4 ICP
+## 5.4 ICP
 - Iterative Closest Point aligns two point sets by:
   - Finding closest-point correspondences within a max distance.
   - Estimating rigid transform minimizing point-to-point error.
   - Iterating until convergence or max iterations.
 - Implementation uses Open3D registration_icp with point-to-point estimation.
 
-### 5.5 GNSS starting point calibration
+## 5.5 GNSS starting point calibration
 - Instead of directly applying GNSS as the transform, use GNSS ENU delta as trans_init for ICP between current and previous PCDs.
 - ICP refines this guess to recover the relative motion with better local consistency.
 
-### 5.6 Final Map Generation
+## 5.6 Final Map Generation
 - Apply accumulated transforms to each scan.
 - Concatenate all transformed points.
 - Return an Open3D PointCloud, write merged_global.xyz, and trajectory_icp.txt.
